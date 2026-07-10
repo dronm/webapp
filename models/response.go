@@ -11,9 +11,6 @@ type RowsAffectedResponse struct {
 }
 
 type CollectionResponse[T any] struct {
-	Rows  []T `json:"rows"`
-	Total any `json:"total,omitempty"`
+	Rows []T `json:"rows"`
+	Agg  any `json:"agg,omitempty"`
 }
-
-
-

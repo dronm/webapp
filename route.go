@@ -3,6 +3,7 @@ package webapp
 import (
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/dronm/ds/v4"
 )
@@ -19,6 +20,8 @@ type Route struct {
 	Pattern    string
 	Middleware []Middleware
 
+	Timeout time.Duration
+
 	Binder Binder
 
 	ServiceName string
@@ -34,6 +37,10 @@ type AppContext struct {
 
 	// QueryIDHeader defaults to Query-Id when empty.
 	QueryIDHeader string
+
+	// DefaultTimeout is applied to routes that do not define their own timeout.
+	// Zero means no default route timeout.
+	DefaultTimeout time.Duration
 
 	// PermissionChecker is used by routes configured with WithPermission.
 	PermissionChecker PermissionChecker
@@ -120,6 +127,12 @@ func WithSuccessCode(statusCode int) RouteOption {
 	}
 }
 
+func WithTimeout(timeout time.Duration) RouteOption {
+	return func(route *Route) {
+		route.Timeout = timeout
+	}
+}
+
 // BuildRouter creates a net/http ServeMux. Patterns use Go 1.22+ ServeMux
 // syntax, for example: GET /supplier/{id}.
 func BuildRouter(appCtx *AppContext, routes []Route, globalMiddleware ...Middleware) http.Handler {
@@ -128,26 +141,34 @@ func BuildRouter(appCtx *AppContext, routes []Route, globalMiddleware ...Middlew
 	for _, route := range routes {
 		handler := BuildHandler(route, appCtx)
 
-		allMiddleware := make([]Middleware, 0, len(globalMiddleware)+1+len(route.Middleware))
-		allMiddleware = append(allMiddleware, globalMiddleware...)
+		routeMiddleware := make([]Middleware, 0, 2+len(route.Middleware))
+
+		timeout := route.Timeout
+		if timeout <= 0 && appCtx != nil {
+			timeout = appCtx.DefaultTimeout
+		}
+		if timeout > 0 {
+			routeMiddleware = append(routeMiddleware, TimeoutMiddleware(timeout))
+		}
 
 		if route.Permission != "" {
-			allMiddleware = append(
-				allMiddleware,
+			routeMiddleware = append(
+				routeMiddleware,
 				PermissionMiddleware(route.Permission, appCtx.PermissionChecker),
 			)
 		}
 
-		allMiddleware = append(allMiddleware, route.Middleware...)
+		routeMiddleware = append(routeMiddleware, route.Middleware...)
+
 		pattern := route.Pattern
 		if route.Method != "" {
 			pattern = route.Method + " " + route.Pattern
 		}
 
-		mux.Handle(pattern, Chain(allMiddleware...)(handler))
+		mux.Handle(pattern, Chain(routeMiddleware...)(handler))
 	}
 
-	return mux
+	return Chain(globalMiddleware...)(mux)
 }
 
 // MustBuildRouter is the same as BuildRouter, but validates route definitions

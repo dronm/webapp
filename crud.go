@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/dronm/ds/v4"
 	"github.com/dronm/modelbind"
@@ -225,27 +226,11 @@ func DeleteModelWithConn(
 	keyModels []types.DBModel,
 	customErrorHandler DBErrorHandler,
 ) (int64, error) {
-	if len(keyModels) == 0 {
-		return 0, fmt.Errorf("delete array is empty")
+	queryText, queryParams, err := buildDeleteModelQuery(keyModels)
+	if err != nil {
+		return 0, err
 	}
 
-	filters := modelpg.PgFilters{}
-	for _, keyModel := range keyModels {
-		if err := modelbind.ModelToDBFilters(
-			keyModel,
-			&filters,
-			types.SQLFilterOperatorEq,
-			types.SQLFilterJoinOr,
-			"",
-		); err != nil {
-			return 0, err
-		}
-	}
-
-	deleteQuery := modelpg.NewPgDelete(keyModels[0], filters)
-
-	queryParams := make([]any, 0)
-	queryText := deleteQuery.SQL(&queryParams)
 	logSQL(ctx, "delete", queryText, queryParams)
 
 	cmd, err := conn.Exec(ctx, queryText, queryParams...)
@@ -254,6 +239,63 @@ func DeleteModelWithConn(
 	}
 
 	return cmd.RowsAffected(), nil
+}
+
+// buildDeleteModelQuery creates one grouped predicate per key model. Fields of a
+// composite key are joined with AND, while separate key models are joined with
+// OR:
+//
+//	(key_a = $1 AND key_b = $2) OR (key_a = $3 AND key_b = $4)
+func buildDeleteModelQuery(keyModels []types.DBModel) (string, []any, error) {
+	if len(keyModels) == 0 {
+		return "", nil, fmt.Errorf("delete array is empty")
+	}
+
+	queryParams := make([]any, 0)
+	keyPredicates := make([]string, 0, len(keyModels))
+	relation := ""
+
+	for i, keyModel := range keyModels {
+		filters := modelpg.PgFilters{}
+		if err := modelbind.ModelToDBFilters(
+			keyModel,
+			&filters,
+			types.SQLFilterOperatorEq,
+			types.SQLFilterJoinAnd,
+			"",
+		); err != nil {
+			return "", nil, fmt.Errorf("build delete key predicate %d: %w", i, err)
+		}
+		if filters.Len() == 0 {
+			return "", nil, fmt.Errorf("delete key model %d has no fields", i)
+		}
+
+		keyRelation := keyModel.Relation()
+		if keyRelation == "" {
+			return "", nil, fmt.Errorf("delete key model %d has an empty relation", i)
+		}
+		if relation == "" {
+			relation = keyRelation
+		} else if keyRelation != relation {
+			return "", nil, fmt.Errorf(
+				"delete key model %d relation %q does not match %q",
+				i,
+				keyRelation,
+				relation,
+			)
+		}
+
+		filterSQL := filters.SQL(&queryParams)
+		predicate, ok := strings.CutPrefix(filterSQL, " WHERE ")
+		if !ok || predicate == "" {
+			return "", nil, fmt.Errorf("delete key model %d produced an empty predicate", i)
+		}
+
+		keyPredicates = append(keyPredicates, "("+predicate+")")
+	}
+
+	queryText := "DELETE FROM " + relation + " WHERE " + strings.Join(keyPredicates, " OR ")
+	return queryText, queryParams, nil
 }
 
 func FetchModel[T types.DBModel](

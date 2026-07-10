@@ -54,6 +54,20 @@ func SessionMiddleware(resolver SessionResolver) Middleware {
 				return
 			}
 
+			if sess != nil {
+				defer func() {
+					if err := sess.Flush(); err != nil {
+						slog.Error(
+							"session flush failed",
+							"error", err,
+							"method", r.Method,
+							"path", r.URL.Path,
+							"query_id", QueryIDFromContext(r.Context()),
+						)
+					}
+				}()
+			}
+
 			ctx := ContextWithSession(r.Context(), sess)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
@@ -284,4 +298,3 @@ func newRequestID() string {
 
 	return hex.EncodeToString(b[:])
 }
-
