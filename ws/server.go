@@ -200,9 +200,10 @@ func (s *Server) handleMessage(ctx context.Context, client *Client, sess session
 		methodName,
 		input,
 		webapp.ServiceContext{
-			DB:      s.config.AppContext.DB,
-			Session: sess,
-			QueryID: clientMsg.QueryID,
+			DB:             s.config.AppContext.DB,
+			EventPublisher: s.config.AppContext.EventPublisher,
+			Session:        sess,
+			QueryID:        clientMsg.QueryID,
 		},
 	)
 	if err != nil {

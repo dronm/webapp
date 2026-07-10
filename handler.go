@@ -69,9 +69,10 @@ func NewServiceContext(r *http.Request, appCtx *AppContext) ServiceContext {
 	}
 
 	return ServiceContext{
-		DB:      appCtx.DB,
-		Session: SessionFromContext(r.Context()),
-		QueryID: queryID,
+		DB:             appCtx.DB,
+		EventPublisher: appCtx.EventPublisher,
+		Session:        SessionFromContext(r.Context()),
+		QueryID:        queryID,
 	}
 }
 

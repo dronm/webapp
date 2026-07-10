@@ -322,9 +322,10 @@ func (s *Server) callLocalEvent(ctx context.Context, channel string, target Targ
 		target.Method,
 		input,
 		webapp.ServiceContext{
-			DB:      s.appContext.DB,
-			Session: nil,
-			QueryID: "pg-notify",
+			DB:             s.appContext.DB,
+			EventPublisher: s.appContext.EventPublisher,
+			Session:        nil,
+			QueryID:        "pg-notify",
 		},
 	)
 	if err != nil {

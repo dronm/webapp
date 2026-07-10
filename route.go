@@ -35,6 +35,9 @@ type Route struct {
 type AppContext struct {
 	DB ds.Provider
 
+	// EventPublisher publishes application events to connected clients.
+	EventPublisher EventPublisher
+
 	// QueryIDHeader defaults to Query-Id when empty.
 	QueryIDHeader string
 

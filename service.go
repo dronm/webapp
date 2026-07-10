@@ -3,7 +3,9 @@ package webapp
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"reflect"
+	"strings"
 	"sync"
 
 	"github.com/dronm/ds/v4"
@@ -15,15 +17,43 @@ type ServiceFactory func(ctx ServiceContext) any
 
 // ServiceContext contains request-scoped dependencies passed to service factories.
 type ServiceContext struct {
-	DB      ds.Provider
-	Session session.Session
-	QueryID string
+	DB             ds.Provider
+	EventPublisher EventPublisher
+	Session        session.Session
+	QueryID        string
 }
 
 // ServiceDef describes one registered service and its callable methods.
 type ServiceDef struct {
-	Factory ServiceFactory
-	Methods map[string]MethodMeta
+	Factory       ServiceFactory
+	Methods       map[string]MethodMeta
+	NotifyMethods map[string]struct{}
+}
+
+// ServiceOption configures a registered service.
+type ServiceOption func(service *ServiceDef)
+
+// WithMethodNotifications publishes an event after each named method succeeds.
+func WithMethodNotifications(methodNames ...string) ServiceOption {
+	return func(service *ServiceDef) {
+		if service.NotifyMethods == nil {
+			service.NotifyMethods = make(map[string]struct{})
+		}
+
+		for _, methodName := range methodNames {
+			methodName = strings.TrimSpace(methodName)
+			if methodName == "" {
+				continue
+			}
+
+			service.NotifyMethods[methodName] = struct{}{}
+		}
+	}
+}
+
+// WithCRUDNotifications publishes events after successful Create, Update, and Delete calls.
+func WithCRUDNotifications() ServiceOption {
+	return WithMethodNotifications("Create", "Update", "Delete")
 }
 
 var (
@@ -49,7 +79,7 @@ type MethodMeta struct {
 }
 
 // RegisterService registers exported service methods that match the supported signatures.
-func RegisterService(name string, prototype any, factory ServiceFactory) error {
+func RegisterService(name string, prototype any, factory ServiceFactory, options ...ServiceOption) error {
 	if name == "" {
 		return fmt.Errorf("service name is empty")
 	}
@@ -117,20 +147,29 @@ func RegisterService(name string, prototype any, factory ServiceFactory) error {
 		return fmt.Errorf("service %s has no callable methods", name)
 	}
 
+	serviceDef := ServiceDef{
+		Factory:       factory,
+		Methods:       methods,
+		NotifyMethods: make(map[string]struct{}),
+	}
+
+	for _, option := range options {
+		if option != nil {
+			option(&serviceDef)
+		}
+	}
+
 	serviceRegistryMu.Lock()
 	defer serviceRegistryMu.Unlock()
 
-	serviceRegistry[name] = ServiceDef{
-		Factory: factory,
-		Methods: methods,
-	}
+	serviceRegistry[name] = serviceDef
 
 	return nil
 }
 
 // MustRegisterService is a startup helper that panics if registration fails.
-func MustRegisterService(name string, prototype any, factory ServiceFactory) {
-	if err := RegisterService(name, prototype, factory); err != nil {
+func MustRegisterService(name string, prototype any, factory ServiceFactory, options ...ServiceOption) {
+	if err := RegisterService(name, prototype, factory, options...); err != nil {
 		panic(err)
 	}
 }
@@ -206,9 +245,28 @@ func CallServiceMethod(
 		return nil, errValue.Interface().(error)
 	}
 
-	if !meta.HasResult {
-		return nil, nil
+	var result any
+	if meta.HasResult {
+		result = out[0].Interface()
 	}
 
-	return out[0].Interface(), nil
+	if _, notify := serviceDef.NotifyMethods[methodName]; notify && svcCtx.EventPublisher != nil {
+		eventID := serviceName + "." + methodName
+		payload := ServiceMethodEvent{
+			Input:   input,
+			Result:  result,
+			QueryID: svcCtx.QueryID,
+		}
+
+		if err := svcCtx.EventPublisher.PublishEvent("", eventID, payload); err != nil {
+			slog.ErrorContext(
+				ctx,
+				"publish service method event",
+				"event_id", eventID,
+				"error", err,
+			)
+		}
+	}
+
+	return result, nil
 }
