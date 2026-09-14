@@ -19,7 +19,11 @@ const defCollectionLimit = 100
 // DBErrorHandler converts database-driver errors to application errors.
 type DBErrorHandler func(err error) error
 
-func handleDBError(err error, customHandler DBErrorHandler) error {
+func handleDBError(
+	err error,
+	operation DatabaseOperation,
+	customHandler DBErrorHandler,
+) error {
 	if err == nil {
 		return nil
 	}
@@ -28,7 +32,7 @@ func handleDBError(err error, customHandler DBErrorHandler) error {
 		return customHandler(err)
 	}
 
-	return err
+	return NormalizeDatabaseError(operation, err)
 }
 
 // InsertModelInput inserts a validated modelbind input using a primary database connection.
@@ -65,14 +69,14 @@ func InsertModelInputWithConn[T types.DBModel](
 
 	if len(insert.RetFieldValues()) == 0 {
 		if _, err := conn.Exec(ctx, queryText, queryParams...); err != nil {
-			return nil, handleDBError(err, customErrorHandler)
+			return nil, handleDBError(err, DatabaseOperationInsert, customErrorHandler)
 		}
 		return map[string]any{}, nil
 	}
 
 	if err := conn.QueryRow(ctx, queryText, queryParams...).
 		Scan(insert.RetFieldValues()...); err != nil && !errors.Is(err, ds.ErrNoRows) {
-		return nil, handleDBError(err, customErrorHandler)
+		return nil, handleDBError(err, DatabaseOperationInsert, customErrorHandler)
 	}
 
 	return dereferenceMapValues(insert.RetFields()), nil
@@ -112,14 +116,14 @@ func InsertModelWithConn[T types.DBModel](
 
 	if len(insert.RetFieldValues()) == 0 {
 		if _, err := conn.Exec(ctx, queryText, queryParams...); err != nil {
-			return nil, handleDBError(err, customErrorHandler)
+			return nil, handleDBError(err, DatabaseOperationInsert, customErrorHandler)
 		}
 		return map[string]any{}, nil
 	}
 
 	if err := conn.QueryRow(ctx, queryText, queryParams...).
 		Scan(insert.RetFieldValues()...); err != nil && !errors.Is(err, ds.ErrNoRows) {
-		return nil, handleDBError(err, customErrorHandler)
+		return nil, handleDBError(err, DatabaseOperationInsert, customErrorHandler)
 	}
 
 	return dereferenceMapValues(insert.RetFields()), nil
@@ -159,7 +163,7 @@ func UpdateModelInputWithConn[T types.DBModel](
 
 	cmd, err := conn.Exec(ctx, queryText, queryParams...)
 	if err != nil {
-		return 0, handleDBError(err, customErrorHandler)
+		return 0, handleDBError(err, DatabaseOperationUpdate, customErrorHandler)
 	}
 
 	return cmd.RowsAffected(), nil
@@ -199,7 +203,7 @@ func UpdateModelWithConn[T types.DBModel](
 
 	cmd, err := conn.Exec(ctx, queryText, queryParams...)
 	if err != nil {
-		return 0, handleDBError(err, customErrorHandler)
+		return 0, handleDBError(err, DatabaseOperationUpdate, customErrorHandler)
 	}
 
 	return cmd.RowsAffected(), nil
@@ -235,7 +239,7 @@ func DeleteModelWithConn(
 
 	cmd, err := conn.Exec(ctx, queryText, queryParams...)
 	if err != nil {
-		return 0, handleDBError(err, customErrorHandler)
+		return 0, handleDBError(err, DatabaseOperationDelete, customErrorHandler)
 	}
 
 	return cmd.RowsAffected(), nil

@@ -216,3 +216,17 @@ Use `InsertModelBinder[T]` or `UpdateModelBinder[T]` when your service only need
 Use `PathValueBinder[T]("id")` when the service accepts a scalar path value directly.
 
 Use `CollectionParamsBinder()` for list routes that expect `modelbind.CollectionParams`.
+
+## Database constraint errors
+
+CRUD helpers normalize recognized PostgreSQL reference-constraint errors before
+they reach the HTTP response layer. A delete blocked by SQLSTATE `23001`
+(`restrict_violation`) or `23503` (`foreign_key_violation`) returns HTTP
+`409 Conflict` with the public error code `record_in_use`. The original
+PostgreSQL error remains available to `errors.As` through the returned error
+chain, while database details are not included in the response.
+
+A non-nil `DBErrorHandler` remains authoritative for model-specific messages.
+Errors from custom SQL are conservatively normalized by `WriteServiceError`;
+call `NormalizeDatabaseError` directly when the operation is known and its
+operation-specific result is required before the HTTP boundary.

@@ -1,11 +1,18 @@
 package webapp
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/dronm/ds/v4"
 	"github.com/dronm/modelbind/types"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type compositeDeleteKey struct {
@@ -39,6 +46,19 @@ type emptyDeleteKey struct {
 
 func (emptyDeleteKey) Relation() string {
 	return "public.test_models"
+}
+
+type failingDeleteConn struct {
+	ds.Conn
+	execErr error
+}
+
+func (c failingDeleteConn) Exec(
+	context.Context,
+	string,
+	...any,
+) (ds.ExecResult, error) {
+	return nil, c.execErr
 }
 
 func TestBuildDeleteModelQueryCompositeKey(t *testing.T) {
@@ -125,5 +145,122 @@ func TestBuildDeleteModelQueryRejectsKeyWithoutFields(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "has no fields") {
 		t.Fatalf("error = %q, want empty key error", err)
+	}
+}
+
+func TestDeleteModelWithConnMapsReferenceConstraintErrors(t *testing.T) {
+	for _, sqlState := range []string{
+		"23001",
+		"23503",
+	} {
+		t.Run(sqlState, func(t *testing.T) {
+			pgErr := &pgconn.PgError{
+				Code:           sqlState,
+				Message:        "private database message",
+				Detail:         "private database detail",
+				ConstraintName: "private_constraint_name",
+			}
+			execErr := fmt.Errorf("execute delete: %w", pgErr)
+
+			_, err := DeleteModelWithConn(
+				context.Background(),
+				failingDeleteConn{execErr: execErr},
+				[]types.DBModel{simpleDeleteKey{ID: 10}},
+				nil,
+			)
+			if err == nil {
+				t.Fatal("DeleteModelWithConn() error = nil, want conflict error")
+			}
+
+			var httpErr HTTPError
+			if !errors.As(err, &httpErr) {
+				t.Fatalf("DeleteModelWithConn() error = %T, want HTTPError", err)
+			}
+			if httpErr.StatusCode() != http.StatusConflict {
+				t.Fatalf("status = %d, want %d", httpErr.StatusCode(), http.StatusConflict)
+			}
+			if httpErr.Code() != "record_in_use" {
+				t.Fatalf("code = %q, want record_in_use", httpErr.Code())
+			}
+			if httpErr.PublicMessage() != "Невозможно удалить запись: она используется в других данных." {
+				t.Fatalf("message = %q, want public record-in-use message", httpErr.PublicMessage())
+			}
+			if !errors.Is(err, pgErr) {
+				t.Fatal("mapped error does not preserve the original PostgreSQL error")
+			}
+
+			recorder := httptest.NewRecorder()
+			WriteServiceError(recorder, fmt.Errorf("delete contact: %w", err))
+			if recorder.Code != http.StatusConflict {
+				t.Fatalf("response status = %d, want %d", recorder.Code, http.StatusConflict)
+			}
+
+			body := decodeJSONBody[ErrorResponse](t, recorder)
+			if body.Error.Code != "record_in_use" {
+				t.Fatalf("response code = %q, want record_in_use", body.Error.Code)
+			}
+			if body.Error.Message != httpErr.PublicMessage() {
+				t.Fatalf("response message = %q, want %q", body.Error.Message, httpErr.PublicMessage())
+			}
+			if strings.Contains(recorder.Body.String(), "private database") ||
+				strings.Contains(recorder.Body.String(), "private_constraint_name") {
+				t.Fatalf("response leaked private PostgreSQL details: %s", recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestDeleteModelWithConnLeavesOtherErrorsUnchanged(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{
+			name: "other PostgreSQL constraint",
+			err:  &pgconn.PgError{Code: "23505"},
+		},
+		{
+			name: "non-PostgreSQL error",
+			err:  errors.New("connection failed"),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := DeleteModelWithConn(
+				context.Background(),
+				failingDeleteConn{execErr: test.err},
+				[]types.DBModel{simpleDeleteKey{ID: 10}},
+				nil,
+			)
+			if err != test.err {
+				t.Fatalf("DeleteModelWithConn() error = %v, want original error %v", err, test.err)
+			}
+		})
+	}
+}
+
+func TestDeleteModelWithConnPreservesCustomErrorHandler(t *testing.T) {
+	pgErr := &pgconn.PgError{Code: "23001"}
+	customErr := errors.New("custom delete error")
+	handlerCalled := false
+
+	_, err := DeleteModelWithConn(
+		context.Background(),
+		failingDeleteConn{execErr: pgErr},
+		[]types.DBModel{simpleDeleteKey{ID: 10}},
+		func(err error) error {
+			handlerCalled = true
+			if err != pgErr {
+				t.Fatalf("custom handler error = %v, want original PostgreSQL error", err)
+			}
+			return customErr
+		},
+	)
+	if !handlerCalled {
+		t.Fatal("custom error handler was not called")
+	}
+	if err != customErr {
+		t.Fatalf("DeleteModelWithConn() error = %v, want custom error %v", err, customErr)
 	}
 }

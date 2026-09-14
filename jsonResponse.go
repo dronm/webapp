@@ -179,6 +179,8 @@ func WriteBindingError(w http.ResponseWriter, err error) {
 }
 
 func WriteServiceError(w http.ResponseWriter, err error) {
+	err = NormalizeDatabaseError(DatabaseOperationUnknown, err)
+
 	var httpErr HTTPError
 	if errors.As(err, &httpErr) {
 		if httpErr.StatusCode() >= http.StatusInternalServerError {
