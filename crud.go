@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"reflect"
 	"strings"
 
 	"github.com/dronm/ds/v4"
 	"github.com/dronm/modelbind"
+	"github.com/dronm/modelbind/access"
 	"github.com/dronm/modelbind/metadata"
 	modelpg "github.com/dronm/modelbind/pg"
 	"github.com/dronm/modelbind/types"
@@ -42,6 +44,9 @@ func InsertModelInput[T types.DBModel](
 	input modelbind.ModelInput[T],
 	customErrorHandler DBErrorHandler,
 ) (map[string]any, error) {
+	if _, err := ResolveModelAccess(ctx, input.Model, access.Insert); err != nil {
+		return nil, err
+	}
 	poolConn, connID, err := db.GetPrimary(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("GetPrimary() failed: %w", err)
@@ -58,28 +63,24 @@ func InsertModelInputWithConn[T types.DBModel](
 	input modelbind.ModelInput[T],
 	customErrorHandler DBErrorHandler,
 ) (map[string]any, error) {
+	resolved, err := ResolveModelAccess(ctx, input.Model, access.Insert)
+	if err != nil {
+		return nil, err
+	}
+	if resolved.Applied {
+		input, err = prepareResolvedInput(input, resolved, access.Insert)
+		if err != nil {
+			return nil, err
+		}
+	}
 	insert := modelpg.NewPgInsert(input.Model)
+	if err := resolved.ApplyTo(insert); err != nil {
+		return nil, err
+	}
 	if err := input.BindInsert(insert); err != nil {
 		return nil, err
 	}
-
-	queryParams := make([]any, 0)
-	queryText := insert.SQL(&queryParams)
-	logSQL(ctx, "insert", queryText, queryParams)
-
-	if len(insert.RetFieldValues()) == 0 {
-		if _, err := conn.Exec(ctx, queryText, queryParams...); err != nil {
-			return nil, handleDBError(err, DatabaseOperationInsert, customErrorHandler)
-		}
-		return map[string]any{}, nil
-	}
-
-	if err := conn.QueryRow(ctx, queryText, queryParams...).
-		Scan(insert.RetFieldValues()...); err != nil && !errors.Is(err, ds.ErrNoRows) {
-		return nil, handleDBError(err, DatabaseOperationInsert, customErrorHandler)
-	}
-
-	return dereferenceMapValues(insert.RetFields()), nil
+	return executeModelInsert(ctx, conn, insert, resolved.Applied, customErrorHandler)
 }
 
 // InsertModel validates and inserts a full model. For handlers, prefer
@@ -90,6 +91,9 @@ func InsertModel[T types.DBModel](
 	model T,
 	customErrorHandler DBErrorHandler,
 ) (map[string]any, error) {
+	if _, err := ResolveModelAccess(ctx, model, access.Insert); err != nil {
+		return nil, err
+	}
 	poolConn, connID, err := db.GetPrimary(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("GetPrimary() failed: %w", err)
@@ -105,28 +109,18 @@ func InsertModelWithConn[T types.DBModel](
 	model T,
 	customErrorHandler DBErrorHandler,
 ) (map[string]any, error) {
+	resolved, err := ResolveModelAccess(ctx, model, access.Insert)
+	if err != nil {
+		return nil, err
+	}
+	if resolved.Applied {
+		return InsertModelInputWithConn(ctx, conn, modelbind.ModelInput[T]{Model: model}, customErrorHandler)
+	}
 	insert := modelpg.NewPgInsert(model)
 	if err := modelbind.BindInsertModel(insert); err != nil {
 		return nil, err
 	}
-
-	queryParams := make([]any, 0)
-	queryText := insert.SQL(&queryParams)
-	logSQL(ctx, "insert", queryText, queryParams)
-
-	if len(insert.RetFieldValues()) == 0 {
-		if _, err := conn.Exec(ctx, queryText, queryParams...); err != nil {
-			return nil, handleDBError(err, DatabaseOperationInsert, customErrorHandler)
-		}
-		return map[string]any{}, nil
-	}
-
-	if err := conn.QueryRow(ctx, queryText, queryParams...).
-		Scan(insert.RetFieldValues()...); err != nil && !errors.Is(err, ds.ErrNoRows) {
-		return nil, handleDBError(err, DatabaseOperationInsert, customErrorHandler)
-	}
-
-	return dereferenceMapValues(insert.RetFields()), nil
+	return executeModelInsert(ctx, conn, insert, false, customErrorHandler)
 }
 
 func UpdateModelInput[T types.DBModel](
@@ -136,6 +130,9 @@ func UpdateModelInput[T types.DBModel](
 	input modelbind.ModelInput[T],
 	customErrorHandler DBErrorHandler,
 ) (int64, error) {
+	if _, err := ResolveModelAccess(ctx, input.Model, access.Update); err != nil {
+		return 0, err
+	}
 	poolConn, connID, err := db.GetPrimary(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("GetPrimary() failed: %w", err)
@@ -152,21 +149,27 @@ func UpdateModelInputWithConn[T types.DBModel](
 	input modelbind.ModelInput[T],
 	customErrorHandler DBErrorHandler,
 ) (int64, error) {
+	resolved, err := ResolveModelAccess(ctx, input.Model, access.Update)
+	if err != nil {
+		return 0, err
+	}
+	if resolved.Applied {
+		if err := modelbind.RequireModelKeys(keyModel); err != nil {
+			return 0, NormalizeAccessError(err)
+		}
+		input, err = prepareResolvedInput(input, resolved, access.Update)
+		if err != nil {
+			return 0, err
+		}
+	}
 	update := modelpg.NewPgUpdate(input.Model)
+	if err := resolved.ApplyTo(update); err != nil {
+		return 0, err
+	}
 	if err := input.BindUpdate(keyModel, update); err != nil {
 		return 0, err
 	}
-
-	queryParams := make([]any, 0)
-	queryText := update.SQL(&queryParams)
-	logSQL(ctx, "update", queryText, queryParams)
-
-	cmd, err := conn.Exec(ctx, queryText, queryParams...)
-	if err != nil {
-		return 0, handleDBError(err, DatabaseOperationUpdate, customErrorHandler)
-	}
-
-	return cmd.RowsAffected(), nil
+	return executeModelUpdate(ctx, conn, update, resolved.Applied, customErrorHandler)
 }
 
 func UpdateModel[T types.DBModel](
@@ -176,6 +179,9 @@ func UpdateModel[T types.DBModel](
 	model T,
 	customErrorHandler DBErrorHandler,
 ) (int64, error) {
+	if _, err := ResolveModelAccess(ctx, model, access.Update); err != nil {
+		return 0, err
+	}
 	poolConn, connID, err := db.GetPrimary(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("GetPrimary() failed: %w", err)
@@ -192,21 +198,18 @@ func UpdateModelWithConn[T types.DBModel](
 	model T,
 	customErrorHandler DBErrorHandler,
 ) (int64, error) {
+	resolved, err := ResolveModelAccess(ctx, model, access.Update)
+	if err != nil {
+		return 0, err
+	}
+	if resolved.Applied {
+		return UpdateModelInputWithConn(ctx, conn, keyModel, modelbind.ModelInput[T]{Model: model}, customErrorHandler)
+	}
 	update := modelpg.NewPgUpdate(model)
 	if err := modelbind.BindUpdateModel(keyModel, update); err != nil {
 		return 0, err
 	}
-
-	queryParams := make([]any, 0)
-	queryText := update.SQL(&queryParams)
-	logSQL(ctx, "update", queryText, queryParams)
-
-	cmd, err := conn.Exec(ctx, queryText, queryParams...)
-	if err != nil {
-		return 0, handleDBError(err, DatabaseOperationUpdate, customErrorHandler)
-	}
-
-	return cmd.RowsAffected(), nil
+	return executeModelUpdate(ctx, conn, update, false, customErrorHandler)
 }
 
 func DeleteModel(
@@ -215,6 +218,14 @@ func DeleteModel(
 	keyModels []types.DBModel,
 	customErrorHandler DBErrorHandler,
 ) (int64, error) {
+	if len(keyModels) == 0 {
+		return 0, fmt.Errorf("delete array is empty")
+	}
+	for _, model := range keyModels {
+		if _, err := ResolveModelAccess(ctx, model, access.Delete); err != nil {
+			return 0, err
+		}
+	}
 	poolConn, connID, err := db.GetPrimary(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("GetPrimary() failed: %w", err)
@@ -230,7 +241,7 @@ func DeleteModelWithConn(
 	keyModels []types.DBModel,
 	customErrorHandler DBErrorHandler,
 ) (int64, error) {
-	queryText, queryParams, err := buildDeleteModelQuery(keyModels)
+	queryText, queryParams, protected, err := buildAccessDeleteModelQuery(ctx, keyModels)
 	if err != nil {
 		return 0, err
 	}
@@ -242,6 +253,9 @@ func DeleteModelWithConn(
 		return 0, handleDBError(err, DatabaseOperationDelete, customErrorHandler)
 	}
 
+	if protected && cmd.RowsAffected() == 0 {
+		return 0, inaccessibleRecordError()
+	}
 	return cmd.RowsAffected(), nil
 }
 
@@ -260,6 +274,9 @@ func buildDeleteModelQuery(keyModels []types.DBModel) (string, []any, error) {
 	relation := ""
 
 	for i, keyModel := range keyModels {
+		if nilInterface(keyModel) {
+			return "", nil, fmt.Errorf("delete key model %d is nil", i)
+		}
 		filters := modelpg.PgFilters{}
 		if err := modelbind.ModelToDBFilters(
 			keyModel,
@@ -308,6 +325,10 @@ func FetchModel[T types.DBModel](
 	keyModel any,
 	model T,
 ) (T, error) {
+	if _, err := ResolveModelAccess(ctx, model, access.Read); err != nil {
+		var zero T
+		return zero, err
+	}
 	poolConn, connID, err := db.GetSecondary(ctx, "")
 	if err != nil {
 		var zero T
@@ -329,18 +350,23 @@ func FetchModelWithConn[T types.DBModel](
 	keyModel any,
 	model T,
 ) error {
-	filters := modelpg.PgFilters{}
-	detailSelect := modelpg.NewPgDetailSelect(model, &filters)
-
-	if err := modelbind.BindDetailSelectModel(keyModel, detailSelect); err != nil {
+	detailSelect, resolved, err := prepareDetailModelSelect(ctx, keyModel, model)
+	if err != nil {
 		return err
 	}
 
 	queryParams := make([]any, 0)
-	queryText := detailSelect.SQL(&queryParams)
+	queryText, err := detailSelect.BuildSQL(&queryParams)
+	if err != nil {
+		return NormalizeAccessError(err)
+	}
 	logSQL(ctx, "detail", queryText, queryParams)
 
-	return conn.QueryRow(ctx, queryText, queryParams...).Scan(detailSelect.FieldValues()...)
+	err = conn.QueryRow(ctx, queryText, queryParams...).Scan(detailSelect.FieldValues()...)
+	if resolved.Applied && errors.Is(err, ds.ErrNoRows) {
+		return inaccessibleRecordError()
+	}
+	return err
 }
 
 // FetchCollectionModel returns rows and the aggregate model. Pass a pointer model
@@ -351,6 +377,9 @@ func FetchCollectionModel[T types.DBAggModel](
 	model T,
 	params modelbind.CollectionParams,
 ) ([]T, any, error) {
+	if _, err := ResolveModelAccess(ctx, model, access.Read); err != nil {
+		return nil, nil, err
+	}
 	poolConn, connID, err := db.GetSecondary(ctx, "")
 	if err != nil {
 		return nil, nil, fmt.Errorf("GetSecondary() failed: %w", err)
@@ -366,17 +395,16 @@ func FetchCollectionModelWithConn[T types.DBAggModel](
 	model T,
 	params modelbind.CollectionParams,
 ) ([]T, any, error) {
-	if params.Count == 0 {
-		params.Count = defCollectionLimit
-	}
-
-	selectQuery := modelpg.NewPgSelect(model, &modelpg.PgFilters{}, &modelpg.PgSorters{}, &modelpg.PgLimit{})
-	if err := modelbind.BindCollectionSelectModel(selectQuery, params); err != nil {
+	selectQuery, err := prepareCollectionModelSelect(ctx, model, params)
+	if err != nil {
 		return nil, nil, err
 	}
 
 	queryParams := make([]any, 0)
-	queryText, totQueryText := selectQuery.CollectionSQL(&queryParams)
+	queryText, totQueryText, err := selectQuery.BuildCollectionSQL(&queryParams)
+	if err != nil {
+		return nil, nil, NormalizeAccessError(err)
+	}
 	logSQL(ctx, "collection", queryText, queryParams)
 
 	rows, err := conn.Query(ctx, queryText, queryParams...)
@@ -407,6 +435,8 @@ func FetchCollectionModelWithConn[T types.DBAggModel](
 	if err := rows.Err(); err != nil {
 		return nil, nil, err
 	}
+
+	rows.Close()
 
 	if totQueryText == "" {
 		return data, nil, nil
@@ -501,4 +531,100 @@ func dereferenceValue(value any) any {
 type UpdateByKeysInput[K types.DBModel, M types.DBModel] struct {
 	Keys  K
 	Input modelbind.ModelInput[M]
+}
+
+// Protected inserts treat an empty RETURNING result as a failure, not success.
+// This also covers triggers/rules that suppress the proposed insert.
+func executeModelInsert(ctx context.Context, conn ds.Conn, insert *modelpg.PgInsert, protected bool, customErrorHandler DBErrorHandler) (map[string]any, error) {
+	queryParams := []any{}
+	queryText, err := insert.BuildSQL(&queryParams)
+	if err != nil {
+		return nil, NormalizeAccessError(err)
+	}
+	logSQL(ctx, "insert", queryText, queryParams)
+	if len(insert.RetFieldValues()) == 0 {
+		cmd, err := conn.Exec(ctx, queryText, queryParams...)
+		if err != nil {
+			return nil, handleDBError(err, DatabaseOperationInsert, customErrorHandler)
+		}
+		if protected && cmd.RowsAffected() == 0 {
+			return nil, NormalizeAccessError(access.ErrDenied)
+		}
+		return map[string]any{}, nil
+	}
+	err = conn.QueryRow(ctx, queryText, queryParams...).Scan(insert.RetFieldValues()...)
+	if err != nil {
+		if errors.Is(err, ds.ErrNoRows) {
+			if protected {
+				return nil, NormalizeAccessError(access.ErrDenied)
+			}
+		} else {
+			return nil, handleDBError(err, DatabaseOperationInsert, customErrorHandler)
+		}
+	}
+	return dereferenceMapValues(insert.RetFields()), nil
+}
+
+func executeModelUpdate(ctx context.Context, conn ds.Conn, update *modelpg.PgUpdate, protected bool, customErrorHandler DBErrorHandler) (int64, error) {
+	queryParams := []any{}
+	queryText, err := update.BuildSQL(&queryParams)
+	if err != nil {
+		return 0, NormalizeAccessError(err)
+	}
+	logSQL(ctx, "update", queryText, queryParams)
+	cmd, err := conn.Exec(ctx, queryText, queryParams...)
+	if err != nil {
+		return 0, handleDBError(err, DatabaseOperationUpdate, customErrorHandler)
+	}
+	if protected && cmd.RowsAffected() == 0 {
+		return 0, inaccessibleRecordError()
+	}
+	return cmd.RowsAffected(), nil
+}
+
+func inaccessibleRecordError() error {
+	return WrapHTTPError(http.StatusNotFound, "not_found", "Record not found", nil, ds.ErrNoRows)
+}
+
+func prepareDetailModelSelect(ctx context.Context, keyModel any, model types.DBModel) (*modelpg.PgDetailSelect, ResolvedAccess, error) {
+	resolved, err := ResolveModelAccess(ctx, model, access.Read)
+	if err != nil {
+		return nil, resolved, err
+	}
+	if resolved.Applied {
+		if err := modelbind.RequireModelKeys(keyModel); err != nil {
+			return nil, resolved, NormalizeAccessError(err)
+		}
+	}
+	filters := modelpg.PgFilters{}
+	detailSelect := modelpg.NewPgDetailSelect(model, &filters)
+	if err := resolved.ApplyTo(detailSelect); err != nil {
+		return nil, resolved, err
+	}
+
+	if err := modelbind.BindDetailSelectModel(keyModel, detailSelect); err != nil {
+		return nil, resolved, err
+	}
+
+	return detailSelect, resolved, nil
+}
+
+func prepareCollectionModelSelect(ctx context.Context, model types.DBAggModel, params modelbind.CollectionParams) (*modelpg.PgSelect, error) {
+	resolved, err := ResolveModelAccess(ctx, model, access.Read)
+	if err != nil {
+		return nil, err
+	}
+	if params.Count == 0 {
+		params.Count = defCollectionLimit
+	}
+
+	selectQuery := modelpg.NewPgSelect(model, &modelpg.PgFilters{}, &modelpg.PgSorters{}, &modelpg.PgLimit{})
+	if err := resolved.ApplyTo(selectQuery); err != nil {
+		return nil, err
+	}
+	if err := modelbind.BindCollectionSelectModel(selectQuery, params); err != nil {
+		return nil, err
+	}
+
+	return selectQuery, nil
 }

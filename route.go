@@ -33,6 +33,9 @@ type Route struct {
 
 // AppContext contains application-wide dependencies available to all handlers.
 type AppContext struct {
+	// Access enables opt-in row and write policies for marked models.
+	Access *AccessController
+
 	DB ds.Provider
 
 	// EventPublisher publishes application events to connected clients.

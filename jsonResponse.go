@@ -169,6 +169,12 @@ func (e *AppError) Details() any {
 }
 
 func WriteBindingError(w http.ResponseWriter, err error) {
+	err = NormalizeAccessError(err)
+	var httpErr HTTPError
+	if errors.As(err, &httpErr) {
+		WriteServiceError(w, err)
+		return
+	}
 	_ = WriteJSONError(
 		w,
 		http.StatusBadRequest,
@@ -179,7 +185,7 @@ func WriteBindingError(w http.ResponseWriter, err error) {
 }
 
 func WriteServiceError(w http.ResponseWriter, err error) {
-	err = NormalizeDatabaseError(DatabaseOperationUnknown, err)
+	err = NormalizeAccessError(NormalizeDatabaseError(DatabaseOperationUnknown, err))
 
 	var httpErr HTTPError
 	if errors.As(err, &httpErr) {

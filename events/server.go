@@ -308,20 +308,19 @@ func (s *Server) callLocalEvent(ctx context.Context, channel string, target Targ
 		}
 	}
 
-	input, err := webapp.DecodeInputForService(target.Service, target.Method, raw)
-	if err != nil {
-		return fmt.Errorf("DecodeInputForService(): %w", err)
-	}
-
 	callCtx, cancel := context.WithTimeout(ctx, s.callTimeout)
 	defer cancel()
+	if s.appContext.Access != nil {
+		callCtx = webapp.ContextWithAccess(callCtx, s.appContext.Access)
+	}
 
-	_, err = webapp.CallServiceMethod(
+	_, err := webapp.CallServiceJSON(
 		callCtx,
 		target.Service,
 		target.Method,
-		input,
+		raw,
 		webapp.ServiceContext{
+			Access:         s.appContext.Access,
 			DB:             s.appContext.DB,
 			EventPublisher: s.appContext.EventPublisher,
 			Session:        nil,

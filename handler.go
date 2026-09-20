@@ -15,11 +15,14 @@ const (
 )
 
 func BuildHandler(route Route, appCtx *AppContext) http.HandlerFunc {
-	if route.Handler != nil {
-		return route.Handler
-	}
-
 	return func(w http.ResponseWriter, r *http.Request) {
+		if appCtx != nil && appCtx.Access != nil {
+			r = r.WithContext(ContextWithAccess(r.Context(), appCtx.Access))
+		}
+		if route.Handler != nil {
+			route.Handler(w, r)
+			return
+		}
 		var input any
 		var err error
 
@@ -69,6 +72,7 @@ func NewServiceContext(r *http.Request, appCtx *AppContext) ServiceContext {
 	}
 
 	return ServiceContext{
+		Access:         appCtx.Access,
 		DB:             appCtx.DB,
 		EventPublisher: appCtx.EventPublisher,
 		Session:        SessionFromContext(r.Context()),
@@ -77,7 +81,17 @@ func NewServiceContext(r *http.Request, appCtx *AppContext) ServiceContext {
 }
 
 func ContextWithSession(ctx context.Context, sess session.Session) context.Context {
-	return context.WithValue(ctx, sessionContextKey, sess)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = context.WithValue(ctx, sessionContextKey, sess)
+	// Replacing a session invalidates both resolved and explicitly supplied
+	// identities. A WebSocket message must not inherit the upgrade identity.
+	ctx = context.WithValue(ctx, principalContextKey, struct{}{})
+	if state := accessStateFromContext(ctx); state != nil {
+		ctx = ContextWithAccess(ctx, state.controller)
+	}
+	return ctx
 }
 
 func SessionFromContext(ctx context.Context) session.Session {

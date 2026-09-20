@@ -35,7 +35,8 @@ func RequestInputBinder[T any](forInsert bool) Binder {
 			return nil, err
 		}
 
-		if err := input.Validate(forInsert); err != nil {
+		input, err = prepareBoundInput(r.Context(), input, forInsert)
+		if err != nil {
 			return nil, err
 		}
 
@@ -72,7 +73,8 @@ func RequestModelBinder[T any](forInsert bool) Binder {
 			return nil, err
 		}
 
-		if err := input.Validate(forInsert); err != nil {
+		input, err = prepareBoundInput(r.Context(), input, forInsert)
+		if err != nil {
 			return nil, err
 		}
 

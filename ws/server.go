@@ -184,22 +184,20 @@ func (s *Server) handleMessage(ctx context.Context, client *Client, sess session
 		}
 	}
 
-	input, err := webapp.DecodeInputForService(serviceName, methodName, clientMsg.Payload)
-	if err != nil {
-		response.Error = errorBody(webapp.BadRequest(err.Error(), nil))
-		_ = s.SendMessage(client, response)
-		return
-	}
-
 	callCtx, cancel := context.WithTimeout(ctx, s.config.MaxMethodCallDuration)
 	defer cancel()
+	if s.config.AppContext.Access != nil {
+		callCtx = webapp.ContextWithAccess(callCtx, s.config.AppContext.Access)
+		callCtx = webapp.ContextWithSession(callCtx, sess)
+	}
 
-	result, err := webapp.CallServiceMethod(
+	result, err := webapp.CallServiceJSON(
 		callCtx,
 		serviceName,
 		methodName,
-		input,
+		clientMsg.Payload,
 		webapp.ServiceContext{
+			Access:         s.config.AppContext.Access,
 			DB:             s.config.AppContext.DB,
 			EventPublisher: s.config.AppContext.EventPublisher,
 			Session:        sess,
@@ -409,6 +407,7 @@ func splitFunc(value string) (string, string, error) {
 }
 
 func errorBody(err error) *webapp.ErrorBody {
+	err = webapp.NormalizeAccessError(err)
 	var httpErr webapp.HTTPError
 	if errors.As(err, &httpErr) {
 		return &webapp.ErrorBody{

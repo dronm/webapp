@@ -12,6 +12,19 @@ It is intended to replace Gin-based controller boilerplate with this flow:
 
 The same service registry is used by HTTP routes, WebSocket messages, and PostgreSQL `LISTEN/NOTIFY` local event calls.
 
+## Access policies
+
+Opt-in user/role presets now restrict modelbind CRUD reads and writes, including
+single-record reads, totals, both full-model and ModelInput write helpers, and
+batch deletes. Standard write binders supply permitted server values before
+required-field validation. Marked resources fail closed without configuration.
+
+See [Access policies](docs/ACCESS_POLICIES.md) for model markers, explicit field
+bindings, principal resolution, HTTP/WebSocket integration, notification behavior
+and dependency setup. See [Implementation notes](docs/IMPLEMENTATION_NOTES.md)
+for test coverage and verification limits. This requires the policy-enabled
+modelbind patch; codegen/application registration is not automatic.
+
 ## Packages
 
 ```text

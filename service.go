@@ -17,6 +17,7 @@ type ServiceFactory func(ctx ServiceContext) any
 
 // ServiceContext contains request-scoped dependencies passed to service factories.
 type ServiceContext struct {
+	Access         *AccessController
 	DB             ds.Provider
 	EventPublisher EventPublisher
 	Session        session.Session
@@ -28,6 +29,7 @@ type ServiceDef struct {
 	Factory       ServiceFactory
 	Methods       map[string]MethodMeta
 	NotifyMethods map[string]struct{}
+	InputDecoders map[string]ServiceInputDecoder
 }
 
 // ServiceOption configures a registered service.
@@ -159,6 +161,13 @@ func RegisterService(name string, prototype any, factory ServiceFactory, options
 		}
 	}
 
+	for methodName, decoder := range serviceDef.InputDecoders {
+		meta, ok := methods[methodName]
+		if !ok || !meta.HasInput || decoder == nil {
+			return fmt.Errorf("invalid input decoder for %s.%s", name, methodName)
+		}
+	}
+
 	serviceRegistryMu.Lock()
 	defer serviceRegistryMu.Unlock()
 
@@ -194,6 +203,7 @@ func CallServiceMethod(
 		return nil, fmt.Errorf("service method not registered: %s.%s", serviceName, methodName)
 	}
 
+	ctx = PrepareServiceContext(ctx, svcCtx)
 	service := serviceDef.Factory(svcCtx)
 	if service == nil {
 		return nil, fmt.Errorf("service factory returned nil: %s", serviceName)
@@ -242,7 +252,7 @@ func CallServiceMethod(
 
 	errValue := out[len(out)-1]
 	if !errValue.IsNil() {
-		return nil, errValue.Interface().(error)
+		return nil, NormalizeAccessError(errValue.Interface().(error))
 	}
 
 	var result any
@@ -258,7 +268,7 @@ func CallServiceMethod(
 			QueryID: svcCtx.QueryID,
 		}
 
-		if err := svcCtx.EventPublisher.PublishEvent("", eventID, payload); err != nil {
+		if err := publishServiceEvent(ctx, svcCtx.EventPublisher, eventID, payload); err != nil {
 			slog.ErrorContext(
 				ctx,
 				"publish service method event",

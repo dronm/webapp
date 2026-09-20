@@ -2,6 +2,7 @@ package webapp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -39,6 +40,10 @@ func LookupMethod(serviceName string, methodName string) (MethodMeta, error) {
 // required by a registered service method. It is intended for WebSocket and
 // PostgreSQL LISTEN/NOTIFY calls where there is no http.Request binder.
 func DecodeInputForService(serviceName string, methodName string, raw json.RawMessage) (any, error) {
+	return DecodeInputForServiceContext(context.Background(), serviceName, methodName, raw)
+}
+
+func decodeInputForServiceLegacy(serviceName string, methodName string, raw json.RawMessage) (any, error) {
 	meta, err := LookupMethod(serviceName, methodName)
 	if err != nil {
 		return nil, err

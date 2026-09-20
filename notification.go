@@ -76,3 +76,33 @@ func NotifyWithConn(
 
 	return nil
 }
+
+// AccessEventPublisher is an explicit opt-in for data-bearing notifications
+// after protected operations. The implementation MUST authorize recipients and
+// scope/redact the payload. Ordinary EventPublisher broadcasting is suppressed
+// for these calls; query policies do not authorize notification recipients.
+type AccessEventPublisher interface {
+	PublishAccessEvent(context.Context, Principal, string, ServiceMethodEvent) error
+}
+
+func publishServiceEvent(ctx context.Context, publisher EventPublisher, eventID string, payload ServiceMethodEvent) error {
+	state := accessStateFromContext(ctx)
+	protected := false
+	if state != nil {
+		state.mu.Lock()
+		protected = state.used
+		state.mu.Unlock()
+	}
+	if protected {
+		authorized, ok := publisher.(AccessEventPublisher)
+		if !ok {
+			return nil
+		}
+		principal, err := PrincipalFromContext(ctx)
+		if err != nil {
+			return err
+		}
+		return authorized.PublishAccessEvent(ctx, principal, eventID, payload)
+	}
+	return publisher.PublishEvent("", eventID, payload)
+}
