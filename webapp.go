@@ -5,6 +5,7 @@
 //
 // Subpackages add optional integrations:
 //
+//	webapp/constants - typed constants, caching and PostgreSQL synchronization
 //	webapp/database - PostgreSQL provider initialization
 //	webapp/session  - Redis-backed HTTP session resolver
 //	webapp/events   - PostgreSQL LISTEN/NOTIFY event server

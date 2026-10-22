@@ -30,10 +30,25 @@ modelbind patch; codegen/application registration is not automatic.
 ```text
 webapp/          root route, binder, middleware, service registry, JSON response helpers
 webapp/database PostgreSQL provider initialization
+webapp/constants typed application constants, shared cache and PostgreSQL synchronization
 webapp/session  Redis-backed HTTP session resolver
 webapp/events   PostgreSQL LISTEN/NOTIFY event server and Event service
 webapp/ws       WebSocket bridge to registered webapp services
 ```
+
+## Application constants
+
+`webapp/constants` provides a PostgreSQL catalogue with stable codes, JSONB
+values, logical types, project-owned Go validators, typed accessors, and generic
+`List`, `Detail`, batch `Get`, and atomic batch `Set` service methods. One shared
+manager caches values in each process and synchronizes through PostgreSQL
+notifications, reconnect refreshes, and periodic reconciliation.
+
+See [Constants](docs/CONSTANTS.md) for migrations, authorization, lifecycle,
+HTTP/WebSocket requests, cache guarantees, and project integration. The compiled
+[project example](examples/constants/project.go) includes a concrete
+`DefaultPriceTypeService`; [seed.sql](examples/constants/seed.sql) supplies initial
+values without replacing administrator changes.
 
 ## Service method signatures
 
