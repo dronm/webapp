@@ -70,7 +70,7 @@ func (r ResolvedAccess) ApplyTo(builder AccessPolicySetter) error {
 	}
 	var operation access.Operation
 	switch builder.(type) {
-	case *modelpg.PgSelect, *modelpg.PgDetailSelect:
+	case *modelpg.PgSelect, *modelpg.PgDetailSelect, *modelpg.PgGroupedSelect:
 		operation = access.Read
 	case *modelpg.PgInsert:
 		operation = access.Insert

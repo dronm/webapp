@@ -258,3 +258,10 @@ A non-nil `DBErrorHandler` remains authoritative for model-specific messages.
 Errors from custom SQL are conservatively normalized by `WriteServiceError`;
 call `NormalizeDatabaseError` directly when the operation is known and its
 operation-specific result is required before the HTTP boundary.
+
+## Grouped collection filters (opt-in)
+
+Nested client `where` conditions are available through additive request and binding
+APIs. Existing filters and APIs keep their behavior. See
+[Grouped collection filters](docs/GROUPED_FILTERS.md) for application opt-in,
+compound date-and-ID cursor requests, search composition, and tests.
